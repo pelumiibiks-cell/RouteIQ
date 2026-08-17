@@ -1,0 +1,87 @@
+# Model registry configuration.
+# Capability scores (reasoning/coding/math/instruction_following/creativity) are
+# 0-10 relative estimates I assigned myself, not claimed benchmark numbers.
+# Identity (name/provider), pricing, context window, and effort ceiling are
+# taken from the current Claude API model/pricing reference. Costs are USD
+# per 1K tokens. Latency scores are 0-10 (higher = faster), also my own
+# relative estimate reflecting typical response speed at comparable effort.
+
+models:
+  - name: claude-haiku-4-5
+    provider: anthropic
+    tier: 1
+    reasoning_score: 4.0
+    coding_score: 4.5
+    math_score: 3.5
+    instruction_following_score: 7.0
+    creativity_score: 5.0
+    vision: true
+    audio: false
+    tool_use: true
+    structured_output: true
+    context_window: 200000
+    latency_score: 9.5
+    cost_per_input_token: 0.001
+    cost_per_output_token: 0.005
+    reliability_score: 7.5
+    # Claude Haiku 4.5 does not accept the `effort` parameter at all on the
+    # real API (it errors) -- capped at the bottom of our scale so the
+    # router never asks it to "reason harder", which it has no dial for.
+    max_reasoning_effort: low
+
+  - name: claude-sonnet-5
+    provider: anthropic
+    tier: 2
+    reasoning_score: 7.5
+    coding_score: 8.5
+    math_score: 7.5
+    instruction_following_score: 8.5
+    creativity_score: 8.0
+    vision: true
+    audio: false
+    tool_use: true
+    structured_output: true
+    context_window: 1000000
+    latency_score: 7.0
+    cost_per_input_token: 0.003
+    cost_per_output_token: 0.015
+    reliability_score: 8.7
+    max_reasoning_effort: max
+
+  - name: claude-opus-5
+    provider: anthropic
+    tier: 3
+    reasoning_score: 8.8
+    coding_score: 9.0
+    math_score: 8.8
+    instruction_following_score: 9.2
+    creativity_score: 8.5
+    vision: true
+    audio: false
+    tool_use: true
+    structured_output: true
+    context_window: 1000000
+    latency_score: 5.0
+    cost_per_input_token: 0.005
+    cost_per_output_token: 0.025
+    reliability_score: 9.3
+    max_reasoning_effort: max
+
+  - name: claude-fable-5
+    provider: anthropic
+    tier: 4
+    reasoning_score: 9.7
+    coding_score: 9.5
+    math_score: 9.6
+    instruction_following_score: 9.5
+    creativity_score: 9.0
+    vision: true
+    audio: false
+    tool_use: true
+    structured_output: true
+    context_window: 1000000
+    latency_score: 3.0
+    cost_per_input_token: 0.01
+    cost_per_output_token: 0.05
+    reliability_score: 9.6
+    max_reasoning_effort: max

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Adaptive Model Router</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Adaptive Model Router</h1>
+    <p class="subtitle">Route any prompt to the weakest model likely to solve it reliably &mdash; escalate only when genuinely needed.</p>
+  </header>
+
+  <main>
+    <section class="panel input-panel">
+      <h2>Prompt</h2>
+      <textarea id="prompt" rows="8" placeholder="Paste a task or prompt here...">Find the subtle concurrency bugs in this distributed Python system. Explain race conditions and propose a safe redesign.</textarea>
+      <div class="constraints">
+        <label>Max cost ($) <input id="maxCost" type="number" step="0.001" placeholder="none"></label>
+        <label>Max latency (ms) <input id="maxLatency" type="number" step="100" placeholder="none"></label>
+        <label>Min quality (0-1) <input id="minQuality" type="number" step="0.05" min="0" max="1" placeholder="none"></label>
+      </div>
+      <button id="routeBtn">Route Prompt</button>
+      <p id="status"></p>
+    </section>
+
+    <section class="panel" id="resultPanel" hidden>
+      <h2>Task Analysis</h2>
+      <div class="difficulty-row">
+        <span>Complexity: <strong id="difficultyValue">-</strong> / 10</span>
+        <span id="twoPassBadge" class="badge" hidden>Pass 2 (deep analysis) used</span>
+      </div>
+      <div id="bars" class="bars"></div>
+
+      <h2>Recommendation</h2>
+      <div class="recommendation">
+        <div class="rec-card">
+          <div class="rec-label">Model</div>
+          <div class="rec-value" id="modelValue">-</div>
+        </div>
+        <div class="rec-card">
+          <div class="rec-label">Effort</div>
+          <div class="rec-value" id="effortValue">-</div>
+        </div>
+        <div class="rec-card">
+          <div class="rec-label">Confidence</div>
+          <div class="rec-value" id="confidenceValue">-</div>
+        </div>
+        <div class="rec-card">
+          <div class="rec-label">Est. Cost</div>
+          <div class="rec-value" id="costValue">-</div>
+        </div>
+        <div class="rec-card">
+          <div class="rec-label">Est. Latency</div>
+          <div class="rec-value" id="latencyValue">-</div>
+        </div>
+      </div>
+
+      <h2>Why</h2>
+      <div id="why"></div>
+
+      <h2>Candidate Ranking</h2>
+      <table id="candidatesTable">
+        <thead>
+          <tr><th>Model</th><th>Effort</th><th>Utility</th><th>Quality Est.</th><th>Overkill</th><th>Underpowered</th><th>Cost</th><th>Latency (ms)</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Model Registry</h2>
+      <table id="modelsTable">
+        <thead>
+          <tr><th>Model</th><th>Tier</th><th>Reasoning</th><th>Coding</th><th>Math</th><th>Vision</th><th>Context</th><th>$/1K in</th><th>$/1K out</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
