@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-DATABASE_URL = "sqlite:///./router.db"
+# Render's free-tier filesystem is ephemeral -- set DATABASE_URL (e.g. to a
+# free Render Postgres instance) so routing telemetry survives restarts.
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./router.db")
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, connect_args=_connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

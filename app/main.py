@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes_eval import router as eval_router
@@ -36,10 +37,18 @@ app.include_router(route_router, tags=["routing"])
 app.include_router(eval_router, tags=["evaluation"])
 
 _frontend_dir = Path(__file__).resolve().parents[1] / "frontend"
-if _frontend_dir.exists():
+_has_dashboard = _frontend_dir.exists()
+if _has_dashboard:
     app.mount("/dashboard", StaticFiles(directory=str(_frontend_dir), html=True), name="dashboard")
 
 
-@app.get("/")
-def root():
+@app.get("/api")
+def service_info():
     return {"service": "adaptive-model-router", "docs": "/docs", "dashboard": "/dashboard"}
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    if _has_dashboard:
+        return RedirectResponse(url="/dashboard")
+    return JSONResponse(service_info())

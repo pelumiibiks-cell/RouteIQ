@@ -1,0 +1,16 @@
+# Pings the deployed Render free-tier instance so it doesn't spin down between
+# visits. Note: GitHub disables scheduled workflows after 60 days with no repo
+# activity, so this needs a commit/push at least that often to keep firing.
+name: keep-warm
+
+on:
+  schedule:
+    - cron: "*/12 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /models
+        run: curl -fsS --max-time 60 https://routeiq-nwg4.onrender.com/models > /dev/null
