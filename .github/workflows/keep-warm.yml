@@ -14,3 +14,8 @@ jobs:
     steps:
       - name: Ping /models
         run: curl -fsS --max-time 60 https://routeiq-nwg4.onrender.com/models > /dev/null
+      - name: Ping /route
+        run: |
+          curl -fsS --max-time 60 -X POST https://routeiq-nwg4.onrender.com/route \
+            -H "Content-Type: application/json" \
+            -d '{"prompt": "keep-warm ping", "constraints": null}' > /dev/null
