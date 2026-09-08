@@ -17,10 +17,13 @@ from app.routing.candidate_generator import generate_candidates
 from app.routing.effort_selector import clamp_effort_to_model, select_effort
 from app.routing.explanation import build_explanation
 
-# Borderline band around the tier-difficulty cut points; if the cheap Pass 1
-# estimate falls within this margin of a cut point, run full Pass 2 analysis.
 _TIER_CUTPOINTS = [3.0, 5.0, 7.0]
-_BORDERLINE_MARGIN = 1.0
+
+# Pass 2 runs when pass 1 is not confident enough in its own read. Gating on
+# uncertainty rather than on raw difficulty is what lets a short prompt with a
+# hard task through: "Prove P != NP." scores near the floor on every cheap
+# signal, so a difficulty-band gate never escalated it.
+_UNCERTAINTY_GATE = 0.35
 
 UTILITY_WEIGHTS = {
     "quality": 1.0,
@@ -64,8 +67,8 @@ class RouteDecision:
     rejected_alternatives: list[str]
 
 
-def _is_borderline(rough_difficulty: float) -> bool:
-    return any(abs(rough_difficulty - cp) <= _BORDERLINE_MARGIN for cp in _TIER_CUTPOINTS)
+def _needs_deep_analysis(quick) -> bool:
+    return quick.uncertainty >= _UNCERTAINTY_GATE
 
 
 def _normalize_penalty(value: float, values: list[float]) -> float:
@@ -89,7 +92,7 @@ def route(
 
     # --- Pass 1: cheap analysis ---
     quick = quick_analyze(normalized)
-    two_pass_used = _is_borderline(quick.rough_difficulty)
+    two_pass_used = _needs_deep_analysis(quick)
 
     # --- Pass 2: deeper analysis, only when borderline ---
     if two_pass_used:
