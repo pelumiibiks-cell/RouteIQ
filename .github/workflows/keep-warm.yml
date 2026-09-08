@@ -14,8 +14,9 @@ jobs:
     steps:
       - name: Ping /models
         run: curl -fsS --max-time 60 https://routeiq-nwg4.onrender.com/models > /dev/null
-      - name: Ping /route
-        run: |
-          curl -fsS --max-time 60 -X POST https://routeiq-nwg4.onrender.com/route \
-            -H "Content-Type: application/json" \
-            -d '{"prompt": "keep-warm ping", "constraints": null}' > /dev/null
+      # Deliberately NOT /route. Every ping inserted a routing_records row --
+      # ~120 synthetic rows a day permanently mixed into the telemetry NOTES.md
+      # describes as the substrate for a future learned policy. /api warms the
+      # same process without writing anything.
+      - name: Ping /api
+        run: curl -fsS --max-time 60 https://routeiq-nwg4.onrender.com/api > /dev/null
