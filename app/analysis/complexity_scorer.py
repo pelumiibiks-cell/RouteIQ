@@ -35,15 +35,19 @@ DIMENSION_WEIGHTS = {
     "domain_specialization": 0.85,
     "output_complexity": 0.8,  # proxy for "planning complexity"
     "research_requirement": 0.8,
-    "multimodal_requirement": 0.8,
+    # NOT multimodal_requirement. That one answers "can this be done without
+    # vision", which is a hard constraint capability_matcher eliminates on, and
+    # scoring it made every prompt carrying an attachment look hard. This one
+    # answers "how much cross-modal reasoning does this demand".
+    "multimodal_reasoning_depth": 1.30,
     "precision_requirement": 0.75,
-    "reliability_requirement": 0.7,
+    "reliability_requirement": 0.6,
     "ambiguity": 0.6,
     # Raw input volume is the weakest predictor of reasoning difficulty in the
     # whole set: a 150-line changelog you only have to extract version numbers
     # from is long, not hard. Discounted hard so length alone cannot clear a
     # tier boundary on its own.
-    "context_length": 0.40,
+    "context_length": 0.30,
 }
 
 # Rank weights for the top-3 blend. They sum to 1.30, not 1.0, deliberately:
@@ -52,6 +56,7 @@ DIMENSION_WEIGHTS = {
 # scored 3.60. The lead weight now lets a single maxed dimension carry the
 # score close to the top of the scale on its own, which is the whole point of
 # blending the top 3 rather than averaging everything.
+# Chosen by scripts/sweep.py against the dev split, not by hand.
 _RANK_WEIGHTS = (0.92, 0.26, 0.12)
 
 
@@ -72,7 +77,7 @@ def score(task_analysis: TaskAnalysis) -> ComplexityScore:
         "math_complexity": req["mathematical_complexity"],
         "planning_complexity": req["output_complexity"],
         "tool_agent_complexity": max(req["tool_usage_requirement"], req["agentic_requirement"]),  # display only; both score independently
-        "multimodal_complexity": req["multimodal_requirement"],
+        "multimodal_complexity": req["multimodal_reasoning_depth"],
         "precision_requirement": req["precision_requirement"],
         "ambiguity": req["ambiguity"],
         "reliability_requirement": req["reliability_requirement"],

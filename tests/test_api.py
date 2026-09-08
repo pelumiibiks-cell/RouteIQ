@@ -1,3 +1,4 @@
+from app.registry.registry import get_default_registry
 import os
 import tempfile
 
@@ -57,7 +58,9 @@ def test_route_endpoint_respects_constraints(client):
 def test_models_endpoint(client):
     resp = client.get("/models")
     assert resp.status_code == 200
-    assert len(resp.json()) == 4
+    # Asserted against the registry rather than a literal, so adding a model to
+    # config/models.yaml does not fail an unrelated endpoint test.
+    assert len(resp.json()) == len(get_default_registry().all())
 
 
 def test_benchmark_endpoint(client):
@@ -73,7 +76,7 @@ def test_tournament_endpoint(client):
     resp = client.post("/evaluate/tournament", json={"prompt": "Summarize this paragraph."})
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body["entries"]) == 4
+    assert len(body["entries"]) == len(get_default_registry().all())
 
 
 def test_feedback_endpoint(client):

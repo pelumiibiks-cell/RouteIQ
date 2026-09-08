@@ -50,7 +50,16 @@ REQUIREMENT_FIELDS = [
     "coding_complexity",
     "mathematical_complexity",
     "research_requirement",
+    # Whether the task CAN be done without vision. A hard capability constraint,
+    # consumed by capability_matcher.
     "multimodal_requirement",
+    # How much reasoning ACROSS modalities the task demands. A difficulty
+    # dimension, consumed by complexity_scorer. Attaching a photo to "what
+    # colour is this car" needs vision but demands no cross-modal reasoning;
+    # correlating product images against reviews and a sales time series needs
+    # both. One number could not represent both, and scoring the capability
+    # signal made every prompt with an attachment look hard.
+    "multimodal_reasoning_depth",
     "instruction_complexity",
     "number_of_steps",
     "ambiguity",
@@ -436,6 +445,14 @@ def _extract_requirements(
         + (4.5 if normalized.attachments else 0.0)
     )
 
+    # No attachment bonus here: the presence of a file says nothing about how
+    # hard the reasoning over it is.
+    multimodal_reasoning_depth = _clip(
+        min(category_scores["multimodal_reasoning"], 9) * 1.1
+        + min(category_scores["image_understanding"], 9) * 0.4
+        + min(category_scores["data_analysis"], 9) * 0.3
+    )
+
     instruction_complexity = _clip(1.0 + min(normalized.numbered_steps, 8) * 0.5 + min(normalized.sentence_count / 4, 5))
 
     number_of_steps = _clip(1.0 + normalized.numbered_steps * 0.9 + category_scores["multi_step_reasoning"] * 0.4)
@@ -490,6 +507,7 @@ def _extract_requirements(
         "mathematical_complexity": mathematical_complexity,
         "research_requirement": research_requirement,
         "multimodal_requirement": multimodal_requirement,
+        "multimodal_reasoning_depth": multimodal_reasoning_depth,
         "instruction_complexity": instruction_complexity,
         "number_of_steps": number_of_steps,
         "ambiguity": ambiguity,
@@ -659,6 +677,7 @@ def approximate_task_analysis(quick: QuickAnalysis) -> TaskAnalysis:
     mathematical_complexity = _clip(scores["math_reasoning"] * 1.0)
     research_requirement = _clip(scores["research"] * 1.0)
     multimodal_requirement = _clip(scores["multimodal_reasoning"] * 0.8 + scores["image_understanding"] * 0.8 + (4.5 if normalized.attachments else 0.0))
+    multimodal_reasoning_depth = _clip(scores["multimodal_reasoning"] * 1.1 + scores["image_understanding"] * 0.4 + scores["data_analysis"] * 0.3)
     instruction_complexity = _clip(1.0 + min(normalized.numbered_steps, 8) * 0.5 + min(normalized.sentence_count / 4, 5))
     number_of_steps = _clip(1.0 + normalized.numbered_steps * 0.9 + scores["multi_step_reasoning"] * 0.4)
     _is_trivial = any(m in text for m in _TRIVIAL_TASK_MARKERS)
@@ -683,6 +702,7 @@ def approximate_task_analysis(quick: QuickAnalysis) -> TaskAnalysis:
         "mathematical_complexity": mathematical_complexity,
         "research_requirement": research_requirement,
         "multimodal_requirement": multimodal_requirement,
+        "multimodal_reasoning_depth": multimodal_reasoning_depth,
         "instruction_complexity": instruction_complexity,
         "number_of_steps": number_of_steps,
         "ambiguity": ambiguity,
