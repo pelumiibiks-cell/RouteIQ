@@ -72,6 +72,22 @@ def _needs_deep_analysis(quick) -> bool:
 
 
 def _normalize_penalty(value: float, values: list[float]) -> float:
+    """Cost/latency penalty relative to the most expensive surviving candidate.
+
+    This is a known distortion, kept deliberately. It gives the priciest
+    survivor the full penalty whether the real spread is 1% or 100x, which
+    means the frontier tier can only win by beating the runner-up on quality by
+    more than the 0.99 quality ceiling leaves available -- so the 0% overkill
+    rate is partly guaranteed by this arithmetic rather than earned.
+
+    The obvious alternative (log ratio against the *cheapest* candidate, so a 1%
+    spread costs 1%) was implemented and measured, and it is worse on both
+    splits: dev banded -12.5pp, overkill +8.3pp, cost savings -10.9pp; test
+    banded -4.8pp with underpowered up 4.8pp. Making the top tier more
+    competitive adds overkill without buying accuracy, because tier selection is
+    driven by the difficulty score upstream, not by this ranking. Re-measure
+    with scripts/sweep.py before changing it.
+    """
     m = max(values) if values else 0.0
     if m <= 0:
         return 0.0

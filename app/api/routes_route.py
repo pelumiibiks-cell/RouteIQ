@@ -10,6 +10,8 @@ from app.schemas import AlternativeModel, FeedbackRequest, RouteRequest, RouteRe
 
 router = APIRouter()
 
+PROMPT_PREVIEW_CHARS = 500
+
 
 @router.post("/route", response_model=RouteResponse)
 def route_prompt(req: RouteRequest, db: Session = Depends(get_db)):
@@ -40,7 +42,9 @@ def route_prompt(req: RouteRequest, db: Session = Depends(get_db)):
     ]
 
     record = RoutingRecord(
-        prompt=req.prompt,
+        # Truncated: this column was unbounded and every request wrote its full
+        # prompt forever, including the keep-warm ping every 12 minutes.
+        prompt=req.prompt[:PROMPT_PREVIEW_CHARS],
         task_features={
             "categories": decision.task_analysis.categories,
             "requirements": decision.task_analysis.requirements,
@@ -53,8 +57,21 @@ def route_prompt(req: RouteRequest, db: Session = Depends(get_db)):
         estimated_latency_ms=decision.selected.cost_latency.latency_ms,
     )
     db.add(record)
+    # The commit has to stay on the request path because the response carries
+    # record_id and /feedback is keyed on it. db.refresh() did not: it issued a
+    # second round-trip purely to read back an autoincrement primary key that
+    # SQLAlchemy already populates on commit.
+    #
+    # Measured: db.add is 0.065ms, db.commit is 13.5ms, and route() itself is
+    # 0.85ms -- so 73% of a /route request is one fsync, and the routing logic
+    # is under 5%. Moving the write to a BackgroundTask does not work as-is: a
+    # yield-dependency session is closed before background tasks run, and the
+    # client needs the id before the response is sent either way. Removing this
+    # cost means changing the contract -- return an application-generated
+    # correlation id (UUID) immediately and persist in the background, with
+    # /feedback keyed on that instead of the autoincrement PK. That is a public
+    # API change, so it is written down here rather than made silently.
     db.commit()
-    db.refresh(record)
 
     return RouteResponse(
         model=decision.selected.model.name,
