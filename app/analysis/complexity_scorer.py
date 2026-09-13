@@ -17,20 +17,47 @@ from dataclasses import dataclass
 
 from app.analysis.task_analyzer import TaskAnalysis
 
+# Relative importance of each dimension. Applied as a multiplier that can only
+# hold a dimension back, never inflate it past its own 0-10 value: a weight of
+# 1.0 means "this dimension speaks for itself", lower means "discount it".
+#
+# These used to be >1.0 numbers divided by max(weights), which silently capped
+# every dimension below the top-weighted one -- a task maxed on multimodal
+# could not score above 5.71 out of 10 no matter what, and reliability capped
+# at 5.00. The ceilings were an artifact of the normalization, not a judgement
+# anyone made.
 DIMENSION_WEIGHTS = {
-    "reasoning_depth": 1.4,
-    "coding_complexity": 1.2,
-    "mathematical_complexity": 1.2,
-    "output_complexity": 0.9,  # proxy for "planning complexity"
-    "agentic_requirement": 1.1,  # proxy for "tool/agent complexity"
-    "multimodal_requirement": 0.8,
-    "precision_requirement": 0.8,
+    "reasoning_depth": 1.0,
+    "coding_complexity": 0.95,
+    "mathematical_complexity": 0.95,
+    "agentic_requirement": 0.95,
+    "tool_usage_requirement": 0.85,
+    "domain_specialization": 0.85,
+    "output_complexity": 0.8,  # proxy for "planning complexity"
+    "research_requirement": 0.8,
+    # NOT multimodal_requirement. That one answers "can this be done without
+    # vision", which is a hard constraint capability_matcher eliminates on, and
+    # scoring it made every prompt carrying an attachment look hard. This one
+    # answers "how much cross-modal reasoning does this demand".
+    "multimodal_reasoning_depth": 1.30,
+    "precision_requirement": 0.75,
+    "reliability_requirement": 0.6,
     "ambiguity": 0.6,
-    "reliability_requirement": 0.7,
-    "context_length": 0.5,
-    "domain_specialization": 1.1,
-    "research_requirement": 0.9,
+    # Raw input volume is the weakest predictor of reasoning difficulty in the
+    # whole set: a 150-line changelog you only have to extract version numbers
+    # from is long, not hard. Discounted hard so length alone cannot clear a
+    # tier boundary on its own.
+    "context_length": 0.30,
 }
+
+# Rank weights for the top-3 blend. They sum to 1.30, not 1.0, deliberately:
+# with a normalized blend a task that is extreme on exactly one axis was
+# multiplied by 0.55 and could never clear a tier-3 cutpoint -- "Prove P != NP"
+# scored 3.60. The lead weight now lets a single maxed dimension carry the
+# score close to the top of the scale on its own, which is the whole point of
+# blending the top 3 rather than averaging everything.
+# Chosen by scripts/sweep.py against the dev split, not by hand.
+_RANK_WEIGHTS = (0.92, 0.26, 0.12)
 
 
 @dataclass
@@ -49,8 +76,8 @@ def score(task_analysis: TaskAnalysis) -> ComplexityScore:
         "coding_complexity": req["coding_complexity"],
         "math_complexity": req["mathematical_complexity"],
         "planning_complexity": req["output_complexity"],
-        "tool_agent_complexity": max(req["tool_usage_requirement"], req["agentic_requirement"]),
-        "multimodal_complexity": req["multimodal_requirement"],
+        "tool_agent_complexity": max(req["tool_usage_requirement"], req["agentic_requirement"]),  # display only; both score independently
+        "multimodal_complexity": req["multimodal_reasoning_depth"],
         "precision_requirement": req["precision_requirement"],
         "ambiguity": req["ambiguity"],
         "reliability_requirement": req["reliability_requirement"],
@@ -64,10 +91,10 @@ def score(task_analysis: TaskAnalysis) -> ComplexityScore:
     # a plain weighted average would use to drag difficulty down). We take a
     # weighted blend of the top-3 weighted dimension values instead of
     # averaging across all ten every time.
-    weighted_dims = {key: req[key] * DIMENSION_WEIGHTS[key] / max(DIMENSION_WEIGHTS.values()) for key in DIMENSION_WEIGHTS}
+    weighted_dims = {key: req[key] * DIMENSION_WEIGHTS[key] for key in DIMENSION_WEIGHTS}
     top_sorted = sorted(weighted_dims.values(), reverse=True)
     top3 = (top_sorted + [0.0, 0.0])[:3]
-    overall = top3[0] * 0.55 + top3[1] * 0.30 + top3[2] * 0.15
+    overall = sum(v * w for v, w in zip(top3, _RANK_WEIGHTS))
 
     # Ambiguity and reliability act as modifiers rather than pure linear terms:
     # a highly ambiguous OR high-stakes task is harder than the raw average suggests.

@@ -9,6 +9,10 @@ from app.registry.model_profile import ModelProfile
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "models.yaml"
 
 
+class RegistryError(ValueError):
+    """Raised when the model registry file is missing, malformed or inconsistent."""
+
+
 class ModelRegistry:
     """Loads model capability/cost metadata from configuration (YAML/JSON).
 
@@ -23,11 +27,32 @@ class ModelRegistry:
         self.reload()
 
     def reload(self) -> None:
-        with open(self._config_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        models = {}
-        for entry in data.get("models", []):
-            profile = ModelProfile(**entry)
+        """Validates as it loads. A malformed registry used to surface as a
+        TypeError from a dataclass constructor, or worse, as a duplicate name
+        silently overwriting an earlier model."""
+        try:
+            with open(self._config_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+        except FileNotFoundError as exc:
+            raise RegistryError(f"model registry not found at {self._config_path}") from exc
+        except yaml.YAMLError as exc:
+            raise RegistryError(f"model registry at {self._config_path} is not valid YAML: {exc}") from exc
+
+        if not isinstance(data, dict) or not data.get("models"):
+            raise RegistryError(f"model registry at {self._config_path} defines no models")
+
+        models: dict[str, ModelProfile] = {}
+        for i, entry in enumerate(data["models"]):
+            try:
+                profile = ModelProfile(**entry)
+            except TypeError as exc:
+                raise RegistryError(f"model #{i} in {self._config_path} has invalid fields: {exc}") from exc
+            if profile.name in models:
+                raise RegistryError(f"duplicate model name {profile.name!r} in {self._config_path}")
+            if profile.context_window <= 0:
+                raise RegistryError(f"{profile.name}: context_window must be positive")
+            if profile.provider != "local" and profile.cost_per_input_token <= 0:
+                raise RegistryError(f"{profile.name}: non-local model needs a positive cost_per_input_token")
             models[profile.name] = profile
         self._models = models
 

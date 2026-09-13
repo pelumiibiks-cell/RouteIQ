@@ -16,8 +16,8 @@ single keyword can push a score past a moderate ceiling on its own.
 """
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
+import re  # used by the phrase compiler below
+from dataclasses import dataclass, field, field
 
 from app.analysis.normalizer import NormalizedPrompt
 
@@ -50,7 +50,16 @@ REQUIREMENT_FIELDS = [
     "coding_complexity",
     "mathematical_complexity",
     "research_requirement",
+    # Whether the task CAN be done without vision. A hard capability constraint,
+    # consumed by capability_matcher.
     "multimodal_requirement",
+    # How much reasoning ACROSS modalities the task demands. A difficulty
+    # dimension, consumed by complexity_scorer. Attaching a photo to "what
+    # colour is this car" needs vision but demands no cross-modal reasoning;
+    # correlating product images against reviews and a sales time series needs
+    # both. One number could not represent both, and scoring the capability
+    # signal made every prompt with an attachment look hard.
+    "multimodal_reasoning_depth",
     "instruction_complexity",
     "number_of_steps",
     "ambiguity",
@@ -101,7 +110,7 @@ _VOCAB = {
         "stack trace", "race condition", "deadlock", "memory leak",
         "doesn't work", "not working", "unexpected behavior", "reproduce",
         "root cause", "fix this", "why is this", "concurrency", "concurrent",
-        "thread-safe", "synchroniz", "subtle bug", "flaky", "intermittent",
+        "thread-safe", "synchroniz*", "subtle bug", "flaky", "intermittent",
     ],
     "software_architecture": [
         "architecture", "architectural", "modular structure", "microservice", "distributed system", "distributed python",
@@ -124,7 +133,7 @@ _VOCAB = {
     "data_analysis": [
         "csv", "dataset", "dataframe", "correlation", "regression",
         "statistics", "outlier", "distribution", "pivot table", "analyze this data",
-        "trend", "aggregat", "time series", "sales data", "class imbalance",
+        "trend", "aggregat*", "time series", "sales data", "class imbalance",
         "training pipeline", "retrain", "ml pipeline", "fraud-detection",
         "fraud detection", "online evaluation", "streaming transaction",
     ],
@@ -134,7 +143,7 @@ _VOCAB = {
         "causal chain", "contributing", "root-cause analysis",
     ],
     "agentic": [
-        "autonomous", "agent", "multi-agent", "orchestrat", "workflow",
+        "autonomous", "agent", "multi-agent", "orchestrat*", "workflow",
         "tool call", "execute steps", "plan and execute", "self-correct",
     ],
     "tool_usage": [
@@ -192,12 +201,50 @@ _PRECISION_MARKERS = [
     "correctness", "guarantee", "verify", "rigorous",
 ]
 
+# Multi-word where the bare word is ambiguous: "a production log dump" is not a
+# high-stakes requirement, but "before promotion to production" is. Bare
+# "production" matched both and pushed a trivial extraction to reliability 5.0.
 _HIGH_STAKES_MARKERS = [
-    "production", "critical", "safety", "financial", "medical", "legal",
-    "cannot fail", "mission-critical", "compliance",
+    "in production", "to production", "production-grade", "production system",
+    "production database", "critical", "safety", "financial", "medical", "legal",
+    "cannot fail", "mission-critical", "compliance", "high stakes",
 ]
 
 _STEP_CONJUNCTIONS = ["and then", "after that", "once done", "next,", "finally,", "also,"]
+
+# Coarse buckets for the pass-1 gate only. These are cutpoints on `rough`, which
+# is a different scale from complexity.overall -- keeping them separate stops the
+# two from being silently compared as if they were the same number.
+_TIER_CUTPOINTS_PASS1 = (3.0, 5.0, 7.0)
+_BOUNDARY_WINDOW = 0.75
+
+# Distinct task verbs, counted as a proxy for how many sub-goals a prompt
+# implies even when it never says "then" or numbers its steps. This is the one
+# difficulty signal here that does not depend on domain vocabulary: "propose a
+# novel approach... survey why existing methods fall short... formalize...
+# design the experimental program" is four sub-goals whatever the subject is,
+# and the topic keyword lists will never cover every subject. Ported from
+# src/amr's action_chain_count and extended with analytical directives.
+_DIRECTIVE_VERBS = (
+    "research", "plan", "design", "build", "implement", "execute", "coordinate",
+    "migrate", "test", "deploy", "monitor", "analyze", "evaluate", "optimize",
+    "review", "refactor", "investigate", "document", "orchestrate",
+    "prove", "derive", "formalize", "survey", "propose", "explain", "justify",
+    "compare", "specify", "cover", "address", "diagnose", "reconcile",
+    "walk through", "lay out", "trade off", "identify", "verify",
+)
+# Inflection-tolerant: design/designs/designed/designing, prove/proves/proved/
+# proving, reconcile/reconciles/reconciled. Without this "walk through how the
+# entries are reconciled" counted zero directives.
+_DIRECTIVE_RE = re.compile(
+    r"\b(?:" + "|".join(_DIRECTIVE_VERBS) + r")(?:e?[sd]|ing)?\b", re.IGNORECASE
+)
+
+
+def count_directives(text_lower: str) -> int:
+    """Distinct task verbs present, not total occurrences -- three mentions of
+    "design" is one sub-goal, not three."""
+    return len({m.lower() for m in _DIRECTIVE_RE.findall(text_lower)})
 
 _TRIVIAL_TASK_MARKERS = [
     "convert", "translate this sentence", "what is the capital", "define ",
@@ -205,8 +252,58 @@ _TRIVIAL_TASK_MARKERS = [
 ]
 
 
+def _compile_phrases(phrases: list[str]) -> list[tuple[str, re.Pattern[str]]]:
+    """Compile each phrase to a (literal, word-boundary pattern) pair, once, at
+    import.
+
+    Plain substring matching scored false hits that changed routing decisions:
+    "capital" contains "api" (coding), "explanation" contains "plan" (planning),
+    "recite" contains "cite" (research), and a changelog of 149 "minor bugfix"
+    lines read as 149 debugging signals -- enough to escalate a trivial
+    extraction a whole tier. A trailing "*" marks a deliberate stem
+    ("orchestrat*" -> orchestrate/orchestration), which anchors only its start.
+    Boundaries are applied only on edges that are word characters, so entries
+    like "```" and "p != np" still match literally.
+
+    The literal is kept as a prefilter. A boundary match is always a subset of a
+    substring match, so `literal in text` rules a phrase out in C before the
+    regex runs -- which matters because these bundles hold 246 phrases and get
+    scanned on every request."""
+    compiled: list[tuple[str, re.Pattern[str]]] = []
+    for phrase in phrases:
+        raw = phrase.strip()
+        prefix_only = raw.endswith("*")
+        if prefix_only:
+            raw = raw[:-1]
+        body = re.escape(raw)
+        if raw[:1].isalnum():
+            body = r"\b" + body
+        if not prefix_only and raw[-1:].isalnum():
+            body = body + r"\b"
+        compiled.append((raw, re.compile(body)))
+    return compiled
+
+
+_PATTERN_CACHE: dict[int, list[tuple[str, re.Pattern[str]]]] = {}
+
+
+def _patterns_for(phrases: list[str]) -> list[tuple[str, re.Pattern[str]]]:
+    """Bundles are module-level constants, so identity is a safe cache key and
+    every bundle compiles exactly once per process."""
+    key = id(phrases)
+    cached = _PATTERN_CACHE.get(key)
+    if cached is None:
+        cached = _compile_phrases(phrases)
+        _PATTERN_CACHE[key] = cached
+    return cached
+
+
 def _count_hits(text_lower: str, phrases: list[str]) -> int:
-    return sum(1 for p in phrases if p in text_lower)
+    return sum(
+        1
+        for literal, pat in _patterns_for(phrases)
+        if literal in text_lower and pat.search(text_lower)
+    )
 
 
 def analyze(normalized: NormalizedPrompt) -> TaskAnalysis:
@@ -293,7 +390,16 @@ def _extract_requirements(
 ) -> dict[str, float]:
     words = max(1, normalized.word_count)
 
-    # reasoning_depth: driven by multi-step signals, debugging/architecture/math presence, step conjunctions
+    # reasoning_depth: driven by multi-step signals, debugging/architecture/math
+    # presence, step conjunctions.
+    #
+    # This used to read six categories only. data_analysis, coding, planning,
+    # long_context_analysis, multimodal_reasoning and document_understanding
+    # contributed nothing at all, so "Design an ML training pipeline that
+    # retrains daily on streaming data, handles class imbalance and supports
+    # online evaluation before promotion to production" classified as
+    # data_analysis and scored 1.50 -- the bare base constant -- on the
+    # highest-weighted dimension in the whole scorer.
     reasoning_depth = 1.5
     reasoning_depth += min(category_scores["multi_step_reasoning"], 9) * 0.55
     reasoning_depth += min(category_scores["debugging"], 9) * 0.4
@@ -301,7 +407,13 @@ def _extract_requirements(
     reasoning_depth += min(category_scores["math_reasoning"], 9) * 0.65
     reasoning_depth += min(category_scores["agentic"], 9) * 0.65
     reasoning_depth += min(category_scores["research"], 9) * 0.4
+    reasoning_depth += min(category_scores["planning"], 9) * 0.5
+    reasoning_depth += min(category_scores["data_analysis"], 9) * 0.45
+    reasoning_depth += min(category_scores["coding"], 9) * 0.3
+    reasoning_depth += min(category_scores["multimodal_reasoning"], 9) * 0.3
+    reasoning_depth += min(category_scores["document_understanding"], 9) * 0.2
     reasoning_depth += min(normalized.numbered_steps, 6) * 0.3
+    reasoning_depth += min(max(0, count_directives(text) - 1), 6) * 0.75
 
     # context_length: from actual char/word volume + long-context signal, not just "long prompt = hard task"
     if normalized.char_count > 20000:
@@ -331,6 +443,14 @@ def _extract_requirements(
         min(category_scores["multimodal_reasoning"], 9) * 0.8
         + min(category_scores["image_understanding"], 9) * 0.9
         + (4.5 if normalized.attachments else 0.0)
+    )
+
+    # No attachment bonus here: the presence of a file says nothing about how
+    # hard the reasoning over it is.
+    multimodal_reasoning_depth = _clip(
+        min(category_scores["multimodal_reasoning"], 9) * 1.1
+        + min(category_scores["image_understanding"], 9) * 0.4
+        + min(category_scores["data_analysis"], 9) * 0.3
     )
 
     instruction_complexity = _clip(1.0 + min(normalized.numbered_steps, 8) * 0.5 + min(normalized.sentence_count / 4, 5))
@@ -387,6 +507,7 @@ def _extract_requirements(
         "mathematical_complexity": mathematical_complexity,
         "research_requirement": research_requirement,
         "multimodal_requirement": multimodal_requirement,
+        "multimodal_reasoning_depth": multimodal_reasoning_depth,
         "instruction_complexity": instruction_complexity,
         "number_of_steps": number_of_steps,
         "ambiguity": ambiguity,
@@ -409,6 +530,8 @@ class QuickAnalysis:
     categories: list[str]
     category_scores: dict[str, float]
     rough_difficulty: float
+    uncertainty: float = 0.0
+    uncertainty_reasons: list[str] = field(default_factory=list)
 
 
 def quick_analyze(normalized: NormalizedPrompt) -> QuickAnalysis:
@@ -435,6 +558,10 @@ def quick_analyze(normalized: NormalizedPrompt) -> QuickAnalysis:
     if normalized.numbered_steps >= 2:
         category_scores["multi_step_reasoning"] += 2.0
 
+    directives = count_directives(text)
+    if directives >= 3:
+        category_scores["multi_step_reasoning"] += min(4.5, (directives - 2) * 1.5)
+
     if max(category_scores.values()) < 1.5:
         category_scores["qa"] += 3.0
 
@@ -453,7 +580,79 @@ def quick_analyze(normalized: NormalizedPrompt) -> QuickAnalysis:
     rough = 1.5 + min(hard_signal, 12) * 0.4 + size_signal * 0.5
     rough = max(0.0, min(10.0, rough))
 
-    return QuickAnalysis(normalized=normalized, categories=selected, category_scores=category_scores, rough_difficulty=round(rough, 2))
+    uncertainty, reasons = _pass1_uncertainty(normalized, category_scores, selected, rough, text)
+
+    return QuickAnalysis(
+        normalized=normalized,
+        categories=selected,
+        category_scores=category_scores,
+        rough_difficulty=round(rough, 2),
+        uncertainty=round(uncertainty, 3),
+        uncertainty_reasons=reasons,
+    )
+
+
+def _pass1_uncertainty(
+    normalized: NormalizedPrompt,
+    category_scores: dict[str, float],
+    selected: list[str],
+    rough: float,
+    text: str,
+) -> tuple[float, list[str]]:
+    """How much pass 1 does NOT trust its own read, on 0-1.
+
+    The old gate asked only whether `rough` landed near a tier cutpoint. That
+    failed in two ways. `rough` has a floor of 1.5 and is lifted only by six
+    "hard" categories, so anything outside those buckets scored ~1.5 and skipped
+    pass 2 no matter what it was -- and `rough` was being compared against
+    cutpoints belonging to a different function with a different distribution.
+
+    Asking "what might I be missing?" instead of "what did I score?" catches the
+    cases the cheap pass is structurally blind to, most importantly the short
+    prompt carrying a hard task."""
+    reasons: list[str] = []
+    uncertainty = 0.0
+
+    for cut in _TIER_CUTPOINTS_PASS1:
+        if abs(rough - cut) < _BOUNDARY_WINDOW:
+            uncertainty += 0.35
+            reasons.append(f"rough difficulty {rough:.1f} sits near tier boundary {cut}")
+            break
+
+    if normalized.has_code_block:
+        uncertainty += 0.25
+        reasons.append("code present - structural complexity needs the full pass")
+
+    if normalized.numbered_steps >= 1:
+        uncertainty += 0.2
+        reasons.append("explicit sequential steps - depth needs verification")
+
+    if _count_hits(text, _AMBIGUITY_MARKERS):
+        uncertainty += 0.15
+        reasons.append("ambiguity markers present")
+
+    # A short prompt is cheap to analyze properly and is exactly where pass 1 is
+    # least reliable: "Prove P != NP." carries almost no lexical signal.
+    if normalized.word_count < 12:
+        uncertainty += 0.25
+        reasons.append("short prompt - little lexical signal to go on")
+
+    # High-stakes wording never reaches the pass-1 requirement estimate, so it
+    # has to force the full pass instead.
+    if _count_hits(text, _HIGH_STAKES_MARKERS):
+        uncertainty += 0.2
+        reasons.append("high-stakes wording - reliability needs the full pass")
+
+    if len(selected) >= 3:
+        uncertainty += 0.15
+        reasons.append(f"{len(selected)} categories in play - task is not single-purpose")
+
+    directives = count_directives(text)
+    if directives >= 3:
+        uncertainty += 0.25
+        reasons.append(f"{directives} distinct task verbs - likely multi-goal")
+
+    return min(1.0, uncertainty), reasons
 
 
 def approximate_task_analysis(quick: QuickAnalysis) -> TaskAnalysis:
@@ -467,24 +666,34 @@ def approximate_task_analysis(quick: QuickAnalysis) -> TaskAnalysis:
     words = max(1, normalized.word_count)
     text = f"{normalized.text}\n{normalized.context}".lower()
 
-    reasoning_depth = _clip(1.5 + scores["multi_step_reasoning"] * 0.5 + scores["debugging"] * 0.5 + scores["software_architecture"] * 0.6 + scores["math_reasoning"] * 0.6 + scores["agentic"] * 0.6 + scores["research"] * 0.3)
+    reasoning_depth = _clip(
+        1.5 + scores["multi_step_reasoning"] * 0.5 + scores["debugging"] * 0.5
+        + scores["software_architecture"] * 0.6 + scores["math_reasoning"] * 0.6
+        + scores["agentic"] * 0.6 + scores["research"] * 0.3
+        + min(max(0, count_directives(text) - 1), 6) * 0.75
+    )
     context_length = _clip(quick.rough_difficulty * 0.6 + min(scores["long_context_analysis"], 6) * 0.4)
     coding_complexity = _clip(scores["coding"] * 0.6 + scores["debugging"] * 0.4 + scores["software_architecture"] * 0.4)
     mathematical_complexity = _clip(scores["math_reasoning"] * 1.0)
     research_requirement = _clip(scores["research"] * 1.0)
     multimodal_requirement = _clip(scores["multimodal_reasoning"] * 0.8 + scores["image_understanding"] * 0.8 + (4.5 if normalized.attachments else 0.0))
+    multimodal_reasoning_depth = _clip(scores["multimodal_reasoning"] * 1.1 + scores["image_understanding"] * 0.4 + scores["data_analysis"] * 0.3)
     instruction_complexity = _clip(1.0 + min(normalized.numbered_steps, 8) * 0.5 + min(normalized.sentence_count / 4, 5))
     number_of_steps = _clip(1.0 + normalized.numbered_steps * 0.9 + scores["multi_step_reasoning"] * 0.4)
     _is_trivial = any(m in text for m in _TRIVIAL_TASK_MARKERS)
-    ambiguity = _clip(2.0 + (3.5 if words < 6 and not _is_trivial else 0.0) + (1.5 if words <= 8 and not _is_trivial else 0.0))
-    precision_requirement = _clip(2.0 + scores["coding"] * 0.2 + scores["math_reasoning"] * 0.2)
+    ambiguity = _clip(2.0 + _count_hits(text, _AMBIGUITY_MARKERS) * 1.8 + (3.5 if words < 6 and not _is_trivial else 0.0) + (1.5 if words <= 8 and not _is_trivial else 0.0))
+    precision_hits = _count_hits(text, _PRECISION_MARKERS)
+    precision_requirement = _clip(2.0 + precision_hits * 2.0 + scores["coding"] * 0.2 + scores["math_reasoning"] * 0.2)
     factuality_requirement = _clip(2.0 + scores["research"] * 0.5 + scores["qa"] * 0.3)
     creativity_requirement = _clip(scores["creative_generation"] * 1.0)
     tool_usage_requirement = _clip(scores["tool_usage"] * 1.0 + scores["agentic"] * 0.3)
     agentic_requirement = _clip(scores["agentic"] * 1.1)
     output_complexity = _clip(1.0 + scores["planning"] * 0.4 + scores["software_architecture"] * 0.4)
     domain_specialization = _clip(max(scores["software_architecture"], scores["math_reasoning"], scores["research"], scores["data_analysis"]) * 0.7)
-    reliability_requirement = _clip(3.0)
+    # Was hardcoded to 3.0, which meant the >= 8 high-stakes escalation in
+    # complexity_scorer could never fire on the pass-1 path -- a prompt saying
+    # "before promotion to production" was never counted at all.
+    reliability_requirement = _clip(3.0 + _count_hits(text, _HIGH_STAKES_MARKERS) * 2.0 + precision_hits * 1.0)
 
     requirements = {
         "reasoning_depth": reasoning_depth,
@@ -493,6 +702,7 @@ def approximate_task_analysis(quick: QuickAnalysis) -> TaskAnalysis:
         "mathematical_complexity": mathematical_complexity,
         "research_requirement": research_requirement,
         "multimodal_requirement": multimodal_requirement,
+        "multimodal_reasoning_depth": multimodal_reasoning_depth,
         "instruction_complexity": instruction_complexity,
         "number_of_steps": number_of_steps,
         "ambiguity": ambiguity,

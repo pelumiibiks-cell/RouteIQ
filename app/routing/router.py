@@ -17,10 +17,13 @@ from app.routing.candidate_generator import generate_candidates
 from app.routing.effort_selector import clamp_effort_to_model, select_effort
 from app.routing.explanation import build_explanation
 
-# Borderline band around the tier-difficulty cut points; if the cheap Pass 1
-# estimate falls within this margin of a cut point, run full Pass 2 analysis.
 _TIER_CUTPOINTS = [3.0, 5.0, 7.0]
-_BORDERLINE_MARGIN = 1.0
+
+# Pass 2 runs when pass 1 is not confident enough in its own read. Gating on
+# uncertainty rather than on raw difficulty is what lets a short prompt with a
+# hard task through: "Prove P != NP." scores near the floor on every cheap
+# signal, so a difficulty-band gate never escalated it.
+_UNCERTAINTY_GATE = 0.35
 
 UTILITY_WEIGHTS = {
     "quality": 1.0,
@@ -64,11 +67,27 @@ class RouteDecision:
     rejected_alternatives: list[str]
 
 
-def _is_borderline(rough_difficulty: float) -> bool:
-    return any(abs(rough_difficulty - cp) <= _BORDERLINE_MARGIN for cp in _TIER_CUTPOINTS)
+def _needs_deep_analysis(quick) -> bool:
+    return quick.uncertainty >= _UNCERTAINTY_GATE
 
 
 def _normalize_penalty(value: float, values: list[float]) -> float:
+    """Cost/latency penalty relative to the most expensive surviving candidate.
+
+    This is a known distortion, kept deliberately. It gives the priciest
+    survivor the full penalty whether the real spread is 1% or 100x, which
+    means the frontier tier can only win by beating the runner-up on quality by
+    more than the 0.99 quality ceiling leaves available -- so the 0% overkill
+    rate is partly guaranteed by this arithmetic rather than earned.
+
+    The obvious alternative (log ratio against the *cheapest* candidate, so a 1%
+    spread costs 1%) was implemented and measured, and it is worse on both
+    splits: dev banded -12.5pp, overkill +8.3pp, cost savings -10.9pp; test
+    banded -4.8pp with underpowered up 4.8pp. Making the top tier more
+    competitive adds overkill without buying accuracy, because tier selection is
+    driven by the difficulty score upstream, not by this ranking. Re-measure
+    with scripts/sweep.py before changing it.
+    """
     m = max(values) if values else 0.0
     if m <= 0:
         return 0.0
@@ -89,7 +108,7 @@ def route(
 
     # --- Pass 1: cheap analysis ---
     quick = quick_analyze(normalized)
-    two_pass_used = _is_borderline(quick.rough_difficulty)
+    two_pass_used = _needs_deep_analysis(quick)
 
     # --- Pass 2: deeper analysis, only when borderline ---
     if two_pass_used:

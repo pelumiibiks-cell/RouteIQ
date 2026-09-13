@@ -7,6 +7,35 @@
 # relative estimate reflecting typical response speed at comparable effort.
 
 models:
+  # A self-hosted open-weights model. Carried here because every hosted model in
+  # this registry has vision, tool use and a >=200k context window, which made
+  # all three hard-capability constraints in capability_matcher unreachable --
+  # the vision elimination branch could never execute and the adversarial
+  # "simple task that needs vision" case routed to a vision model by accident
+  # rather than by constraint. Ported from src/amr/registry/models.yaml, with
+  # pricing converted from per-1M to the per-1K units this file uses.
+  - name: local-llama-3.1-8b
+    provider: local
+    tier: 1
+    reasoning_score: 3.5
+    coding_score: 3.8
+    math_score: 3.0
+    instruction_following_score: 6.0
+    creativity_score: 4.5
+    vision: false
+    audio: false
+    tool_use: false
+    structured_output: false
+    context_window: 128000
+    latency_score: 8.0
+    # Self-hosted: no per-token charge. Compute is a fixed cost, not a
+    # per-request one, so the router sees it as free and any pick above it has
+    # to justify its price.
+    cost_per_input_token: 0.0
+    cost_per_output_token: 0.0
+    reliability_score: 6.5
+    max_reasoning_effort: low
+
   - name: claude-haiku-4-5
     provider: anthropic
     tier: 1

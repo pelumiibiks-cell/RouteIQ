@@ -17,13 +17,17 @@ class RoutingRecord(Base):
     __tablename__ = "routing_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    # Indexed: every read of this table is "recent records" or "records for
+    # model X", and the table had no index at all.
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=lambda: dt.datetime.now(dt.timezone.utc), index=True
+    )
 
     prompt: Mapped[str] = mapped_column(String)
     task_features: Mapped[dict] = mapped_column(JSON)
     estimated_difficulty: Mapped[float] = mapped_column(Float)
 
-    selected_model: Mapped[str] = mapped_column(String)
+    selected_model: Mapped[str] = mapped_column(String, index=True)
     selected_effort: Mapped[str] = mapped_column(String)
     confidence: Mapped[float] = mapped_column(Float)
 
