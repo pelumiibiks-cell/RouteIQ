@@ -251,6 +251,16 @@ _TRIVIAL_TASK_MARKERS = [
     "spell check", "capitalize", "how many words",
 ]
 
+# Short factual/arithmetic questions ("what is 2+2?", "what's 10% of 50")
+# read as ambiguous under the word-count heuristic below purely for being
+# short. This catches the common deterministic phrasing so they aren't
+# penalized just for brevity.
+_SIMPLE_ARITHMETIC_RE = re.compile(r"\d+\s*[-+*/x×÷]\s*\d+")
+
+
+def _is_trivial_task(text: str) -> bool:
+    return any(m in text for m in _TRIVIAL_TASK_MARKERS) or bool(_SIMPLE_ARITHMETIC_RE.search(text))
+
 
 def _compile_phrases(phrases: list[str]) -> list[tuple[str, re.Pattern[str]]]:
     """Compile each phrase to a (literal, word-boundary pattern) pair, once, at
@@ -459,7 +469,7 @@ def _extract_requirements(
 
     ambiguity_hits = _count_hits(text, _AMBIGUITY_MARKERS)
     precision_hits = _count_hits(text, _PRECISION_MARKERS)
-    is_trivial_task = any(m in text for m in _TRIVIAL_TASK_MARKERS)
+    is_trivial_task = _is_trivial_task(text)
     ambiguity = _clip(
         1.5 + ambiguity_hits * 1.8 - precision_hits * 0.8
         + (3.5 if words < 6 and not is_trivial_task else 0.0)
@@ -680,7 +690,7 @@ def approximate_task_analysis(quick: QuickAnalysis) -> TaskAnalysis:
     multimodal_reasoning_depth = _clip(scores["multimodal_reasoning"] * 1.1 + scores["image_understanding"] * 0.4 + scores["data_analysis"] * 0.3)
     instruction_complexity = _clip(1.0 + min(normalized.numbered_steps, 8) * 0.5 + min(normalized.sentence_count / 4, 5))
     number_of_steps = _clip(1.0 + normalized.numbered_steps * 0.9 + scores["multi_step_reasoning"] * 0.4)
-    _is_trivial = any(m in text for m in _TRIVIAL_TASK_MARKERS)
+    _is_trivial = _is_trivial_task(text)
     ambiguity = _clip(2.0 + _count_hits(text, _AMBIGUITY_MARKERS) * 1.8 + (3.5 if words < 6 and not _is_trivial else 0.0) + (1.5 if words <= 8 and not _is_trivial else 0.0))
     precision_hits = _count_hits(text, _PRECISION_MARKERS)
     precision_requirement = _clip(2.0 + precision_hits * 2.0 + scores["coding"] * 0.2 + scores["math_reasoning"] * 0.2)
